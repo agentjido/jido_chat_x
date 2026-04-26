@@ -4,6 +4,20 @@
 
 The adapter is built on [`xdk-elixir`](https://github.com/mikehostetler/xdk-elixir) for API calls.
 
+## Feature surface
+
+- Numeric X user ids can be used as outbound DM rooms.
+- Existing DM conversations use `conversation:{dm_conversation_id}`.
+- `send_message/3` sends text DMs by participant id or conversation id.
+- `post_message/3` sends text/markdown payloads as plain DM text.
+- `send_file/3` supports remote file/media URLs by appending links to the DM text.
+- Local file paths and in-memory binary uploads are intentionally rejected until the media upload flow is live-tested.
+- `fetch_message/3`, `fetch_messages/2`, and `delete_message/3` use the XDK Direct Messages API.
+- `open_dm/2` returns the numeric user id as a sendable DM room.
+- Account Activity webhooks verify CRC and POST signatures, parse DM events, and route through `Jido.Chat.process_event/4`.
+
+X Direct Messages do not support message edits, reactions, modals, or ephemeral messages through this adapter.
+
 ## Live testing
 
 Set:

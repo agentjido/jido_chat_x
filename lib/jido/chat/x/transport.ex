@@ -5,6 +5,7 @@ defmodule Jido.Chat.X.Transport do
   @callback send_conversation_message(String.t(), String.t(), keyword()) ::
               {:ok, map()} | {:error, term()}
   @callback delete_dm_event(String.t(), keyword()) :: :ok | {:error, term()}
+  @callback fetch_dm_event(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   @callback fetch_conversation_messages(String.t(), keyword()) ::
               {:ok, list(map()) | map()} | {:error, term()}
 end

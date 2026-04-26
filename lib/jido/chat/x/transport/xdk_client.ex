@@ -34,6 +34,15 @@ defmodule Jido.Chat.X.Transport.XdkClient do
   end
 
   @impl true
+  def fetch_dm_event(event_id, opts) do
+    client = client!(opts)
+    Xdk.DirectMessages.get_events_by_id(client, event_id, opts)
+  rescue
+    UndefinedFunctionError ->
+      {:error, :xdk_dm_endpoint_missing}
+  end
+
+  @impl true
   def fetch_conversation_messages(conversation_id, opts) do
     client = client!(opts)
     Xdk.DirectMessages.get_events_by_conversation_id(client, conversation_id, opts)
