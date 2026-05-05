@@ -24,6 +24,7 @@ Set:
 
 ```bash
 RUN_LIVE_X_TESTS=true
+RUN_LIVE_X_SEND_TESTS=false
 X_CONSUMER_KEY=
 X_CONSUMER_SECRET=
 X_ACCESS_TOKEN=
@@ -31,7 +32,10 @@ X_ACCESS_TOKEN_SECRET=
 X_TEST_RECIPIENT_ID=
 ```
 
-The authenticated X user must be able to send a DM to `X_TEST_RECIPIENT_ID`.
+`RUN_LIVE_X_TESTS=true` enables read-only credential verification. Set
+`RUN_LIVE_X_SEND_TESTS=true` only when you want the test suite to create a real DM
+to `X_TEST_RECIPIENT_ID`. The authenticated X user must be able to send a DM to
+that recipient.
 
 Run:
 
