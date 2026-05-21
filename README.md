@@ -4,6 +4,16 @@
 
 The adapter is built on [`xdk-elixir`](https://github.com/mikehostetler/xdk-elixir) for API calls.
 
+## Installation
+
+```elixir
+def deps do
+  [
+    {:jido_chat_x, "~> 0.1"}
+  ]
+end
+```
+
 ## Feature surface
 
 - Numeric X user ids can be used as outbound DM rooms.
