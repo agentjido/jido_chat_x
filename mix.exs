@@ -1,7 +1,7 @@
 defmodule Jido.Chat.X.MixProject do
   use Mix.Project
 
-  @version "0.1.0"
+  @version "1.0.0"
   @source_url "https://github.com/agentjido/jido_chat_x"
   @description "X/Twitter Direct Messages adapter package for Jido.Chat"
 
@@ -61,6 +61,7 @@ defmodule Jido.Chat.X.MixProject do
       licenses: ["Apache-2.0"],
       links: %{
         "Changelog" => "https://github.com/agentjido/jido_chat_x/blob/main/CHANGELOG.md",
+        "Discord" => "https://jido.run/discord",
         "Documentation" => "https://hexdocs.pm/jido_chat_x",
         "GitHub" => @source_url,
         "Website" => "https://jido.run"
