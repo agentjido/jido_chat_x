@@ -489,8 +489,6 @@ defmodule Jido.Chat.X.Adapter do
     _ -> nil
   end
 
-  defp filename_from_url(_url), do: nil
-
   defp blank_to_nil(nil), do: nil
   defp blank_to_nil(""), do: nil
   defp blank_to_nil(value) when is_binary(value), do: value
