@@ -1,7 +1,7 @@
 defmodule Jido.Chat.X.MixProject do
   use Mix.Project
 
-  @version "1.0.0"
+  @version "1.0.1"
   @source_url "https://github.com/agentjido/jido_chat_x"
   @description "X/Twitter Direct Messages adapter package for Jido.Chat"
 
