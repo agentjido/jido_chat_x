@@ -20,6 +20,15 @@ defmodule Jido.Chat.X.Adapter do
 
   alias Jido.Chat.X.Transport.XdkClient
 
+  @image_media_types %{
+    ".avif" => "image/avif",
+    ".gif" => "image/gif",
+    ".jpeg" => "image/jpeg",
+    ".jpg" => "image/jpeg",
+    ".png" => "image/png",
+    ".webp" => "image/webp"
+  }
+
   @impl true
   def channel_type, do: :x
 
@@ -418,10 +427,15 @@ defmodule Jido.Chat.X.Adapter do
   end
 
   defp media_from_x_media(media) do
+    kind = media_kind(media["type"] || media["media_type"])
+    primary_url = media["url"] || media["media_url_https"]
+    url = primary_url || media["preview_image_url"]
+
     Media.new(%{
-      kind: media_kind(media["type"] || media["media_type"]),
-      url: media["url"] || media["media_url_https"] || media["preview_image_url"],
-      media_type: media["mime_type"],
+      kind: kind,
+      url: url,
+      media_type:
+        non_empty_string(media["mime_type"]) || media_type_from_primary_url(kind, primary_url),
       width: media["width"],
       height: media["height"],
       duration: media["duration_ms"],
@@ -437,6 +451,26 @@ defmodule Jido.Chat.X.Adapter do
   defp media_kind(type) when type in ["video"], do: :video
   defp media_kind(type) when type in ["audio"], do: :audio
   defp media_kind(_type), do: :file
+
+  defp media_type_from_primary_url(:image, url) when is_binary(url) do
+    url
+    |> URI.parse()
+    |> Map.get(:path)
+    |> Path.extname()
+    |> String.downcase()
+    |> then(&Map.get(@image_media_types, &1))
+  end
+
+  defp media_type_from_primary_url(_kind, _url), do: nil
+
+  defp non_empty_string(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp non_empty_string(_value), do: nil
 
   defp format_crc_response(%WebhookRequest{} = request, secret, true) do
     cond do
