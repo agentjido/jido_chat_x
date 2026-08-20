@@ -150,7 +150,50 @@ defmodule Jido.Chat.X.AdapterTest do
     assert incoming.external_room_id == "conversation:123"
     assert incoming.external_user_id == "123"
     assert incoming.text == "hello"
-    assert [%{kind: :image, url: "https://example.test/photo.jpg"}] = incoming.media
+    assert [media] = incoming.media
+    assert media.kind == :image
+    assert media.url == "https://example.test/photo.jpg"
+    assert media.media_type == "image/jpeg"
+
+    explicit =
+      put_in(
+        event,
+        ["message_create", "message_data", "attachment", "media", "mime_type"],
+        "image/png"
+      )
+
+    assert {:ok, explicit_incoming} = Adapter.transform_incoming(%{"dm_event" => explicit})
+    assert [%{media_type: "image/png"}] = explicit_incoming.media
+
+    invalid_explicit =
+      event
+      |> put_in(
+        ["message_create", "message_data", "attachment", "media", "mime_type"],
+        "not-a-mime"
+      )
+      |> put_in(
+        ["message_create", "message_data", "attachment", "media", "url"],
+        " "
+      )
+      |> put_in(
+        ["message_create", "message_data", "attachment", "media", "media_url_https"],
+        "https://example.test/photo.PNG?token=signed"
+      )
+
+    assert {:ok, invalid_incoming} =
+             Adapter.transform_incoming(%{"dm_event" => invalid_explicit})
+
+    assert [%{kind: :image, media_type: "image/png"}] = invalid_incoming.media
+
+    misleading =
+      put_in(
+        event,
+        ["message_create", "message_data", "attachment", "media", "media_url_https"],
+        "https://example.test/report.pdf"
+      )
+
+    assert {:ok, misleading_incoming} = Adapter.transform_incoming(%{"dm_event" => misleading})
+    assert [%{kind: :image, media_type: nil}] = misleading_incoming.media
   end
 
   test "normalizes X API v2 DM events with included media" do
@@ -162,7 +205,9 @@ defmodule Jido.Chat.X.AdapterTest do
     assert envelope.event_type == :message
     assert envelope.payload.external_room_id == "conversation:abc"
     assert envelope.payload.text == "hello with media"
-    assert [%{kind: :image, url: "https://example.test/preview.jpg"}] = envelope.payload.media
+
+    assert [%{kind: :image, url: "https://example.test/preview.jpg", media_type: nil}] =
+             envelope.payload.media
   end
 
   test "verifies POST webhook signatures against the raw body" do
