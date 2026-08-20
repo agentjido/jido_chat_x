@@ -20,6 +20,7 @@ defmodule Jido.Chat.X.Adapter do
 
   alias Jido.Chat.X.Transport.XdkClient
 
+  @media_type_pattern ~r/^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/
   @image_media_types %{
     ".avif" => "image/avif",
     ".gif" => "image/gif",
@@ -428,14 +429,14 @@ defmodule Jido.Chat.X.Adapter do
 
   defp media_from_x_media(media) do
     kind = media_kind(media["type"] || media["media_type"])
-    primary_url = media["url"] || media["media_url_https"]
-    url = primary_url || media["preview_image_url"]
+    primary_url = first_non_blank([media["url"], media["media_url_https"]])
+    url = first_non_blank([primary_url, media["preview_image_url"]])
 
     Media.new(%{
       kind: kind,
       url: url,
       media_type:
-        non_empty_string(media["mime_type"]) || media_type_from_primary_url(kind, primary_url),
+        normalize_media_type(media["mime_type"]) || media_type_from_primary_url(kind, primary_url),
       width: media["width"],
       height: media["height"],
       duration: media["duration_ms"],
@@ -456,21 +457,39 @@ defmodule Jido.Chat.X.Adapter do
     url
     |> URI.parse()
     |> Map.get(:path)
-    |> Path.extname()
-    |> String.downcase()
+    |> case do
+      path when is_binary(path) -> path |> Path.extname() |> String.downcase()
+      _other -> ""
+    end
     |> then(&Map.get(@image_media_types, &1))
   end
 
   defp media_type_from_primary_url(_kind, _url), do: nil
 
-  defp non_empty_string(value) when is_binary(value) do
-    case String.trim(value) do
-      "" -> nil
-      trimmed -> trimmed
-    end
+  defp normalize_media_type(value) when is_binary(value) do
+    trimmed = String.trim(value)
+
+    if Regex.match?(@media_type_pattern, canonical_media_type(trimmed)),
+      do: trimmed,
+      else: nil
   end
 
-  defp non_empty_string(_value), do: nil
+  defp normalize_media_type(_value), do: nil
+
+  defp canonical_media_type(value) do
+    value
+    |> String.split(";", parts: 2)
+    |> hd()
+    |> String.trim()
+    |> String.downcase()
+  end
+
+  defp first_non_blank(values) do
+    Enum.find_value(values, fn
+      value when is_binary(value) -> if(String.trim(value) == "", do: nil, else: value)
+      _other -> nil
+    end)
+  end
 
   defp format_crc_response(%WebhookRequest{} = request, secret, true) do
     cond do
