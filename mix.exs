@@ -32,7 +32,7 @@ defmodule Jido.Chat.X.MixProject do
 
   defp deps do
     [
-      {:jido_chat, "~> 1.0"},
+      {:jido_chat, "~> 1.2 and >= 1.2.1"},
       {:xdk_elixir, "~> 1.0"},
       {:jason, "~> 1.4"},
       {:dotenvy, "~> 1.1", only: [:test]},
