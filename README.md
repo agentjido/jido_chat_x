@@ -71,3 +71,7 @@ X Account Activity webhooks are required for real-time DM ingress.
 - Subscribe the authenticated user account to Account Activity events
 
 The adapter deduplicates should be handled by the runtime using the DM event id.
+
+## Local Documentation
+
+Run `mix docs` to generate HTML and Markdown documentation in `doc/`, including Markdown pages and `llms.txt`.
