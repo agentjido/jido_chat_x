@@ -36,7 +36,7 @@ defmodule Jido.Chat.X.Transport.XdkClient do
   @impl true
   def fetch_dm_event(event_id, opts) do
     client = client!(opts)
-    Xdk.DirectMessages.get_events_by_id(client, event_id, opts)
+    Xdk.DirectMessages.get_events_by_id(client, event_id, query_opts(opts))
   rescue
     UndefinedFunctionError ->
       {:error, :xdk_dm_endpoint_missing}
@@ -45,10 +45,28 @@ defmodule Jido.Chat.X.Transport.XdkClient do
   @impl true
   def fetch_conversation_messages(conversation_id, opts) do
     client = client!(opts)
-    Xdk.DirectMessages.get_events_by_conversation_id(client, conversation_id, opts)
+    Xdk.DirectMessages.get_events_by_conversation_id(client, conversation_id, query_opts(opts))
   rescue
     UndefinedFunctionError ->
       {:error, :xdk_dm_endpoint_missing}
+  end
+
+  defp query_opts(opts) do
+    opts
+    |> Keyword.take([
+      :expansions,
+      :dm_event_fields,
+      :user_fields,
+      :media_fields,
+      :pagination_token,
+      :max_results
+    ])
+    |> then(fn query ->
+      if opts[:cursor], do: Keyword.put(query, :pagination_token, opts[:cursor]), else: query
+    end)
+    |> then(fn query ->
+      if opts[:limit], do: Keyword.put(query, :max_results, opts[:limit]), else: query
+    end)
   end
 
   defp client!(opts) do

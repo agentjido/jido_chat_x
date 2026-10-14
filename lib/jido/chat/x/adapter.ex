@@ -2,24 +2,25 @@ defmodule Jido.Chat.X.Adapter do
   @moduledoc "X/Twitter Direct Messages `Jido.Chat.Adapter` implementation."
   use Jido.Chat.Adapter
 
+  alias Jido.Chat.Delivery
+  alias Jido.Chat.Errors.Contract
+  alias Jido.Chat.Signal.Identity
+  alias Jido.Chat.Signal.Policy
+
   alias Jido.Chat.{
     Attachment,
     Author,
-    EventEnvelope,
     FileUpload,
     ID,
-    Incoming,
     Media,
     Message,
     MessagePage,
     PostPayload,
-    Response,
     WebhookRequest,
     WebhookResponse
   }
 
   alias Jido.Chat.X.Transport.XdkClient
-
   @media_type_pattern ~r/^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/
   @image_media_types %{
     ".avif" => "image/avif",
@@ -29,9 +30,10 @@ defmodule Jido.Chat.X.Adapter do
     ".png" => "image/png",
     ".webp" => "image/webp"
   }
-
   @impl true
-  def channel_type, do: :x
+  def channel_type do
+    :x
+  end
 
   @impl true
   def capabilities do
@@ -41,7 +43,7 @@ defmodule Jido.Chat.X.Adapter do
       fetch_messages: :native,
       webhook: :native,
       verify_webhook: :native,
-      parse_event: :native,
+      normalize_event: :native,
       format_webhook_response: :native,
       post_message: :native,
       send_file: :native,
@@ -55,24 +57,6 @@ defmodule Jido.Chat.X.Adapter do
       multi_file: :native
     }
   end
-
-  @impl true
-  def transform_incoming(%{"dm_event" => event} = payload),
-    do: {:ok, incoming_from_dm(event, payload)}
-
-  def transform_incoming(%{"type" => "MessageCreate"} = event),
-    do: {:ok, incoming_from_dm(event, event)}
-
-  def transform_incoming(%{"type" => "message_create"} = event),
-    do: {:ok, incoming_from_dm(event, event)}
-
-  def transform_incoming(%{"event_type" => "MessageCreate"} = event),
-    do: {:ok, incoming_from_dm(event, event)}
-
-  def transform_incoming(%{"event_type" => "message_create"} = event),
-    do: {:ok, incoming_from_dm(event, event)}
-
-  def transform_incoming(_), do: {:error, :unsupported_payload}
 
   @impl true
   def send_message(room_id, text, opts \\ []) do
@@ -133,36 +117,20 @@ defmodule Jido.Chat.X.Adapter do
 
     with {:ok, raw} <- transport(opts).fetch_conversation_messages(conversation_id, opts) do
       events = raw["data"] || raw[:data] || raw
+      messages = events |> List.wrap() |> Enum.map(&message_from_event(&1, room_id, raw))
 
-      messages =
-        events
-        |> List.wrap()
-        |> Enum.map(&message_from_event(&1, room_id, raw))
-
-      {:ok, MessagePage.new(%{messages: messages, metadata: %{"raw" => raw}})}
+      {:ok,
+       MessagePage.new(%{
+         messages: messages,
+         next_cursor: get_in(raw, ["meta", "next_token"]),
+         metadata: %{"raw" => raw}
+       })}
     end
   end
 
   @impl true
-  def open_dm(user_id, _opts \\ []), do: {:ok, to_string(user_id)}
-
-  @impl true
-  def handle_webhook(%Jido.Chat{} = chat, payload, opts \\ []) when is_map(payload) do
-    request =
-      WebhookRequest.new(%{
-        adapter_name: :x,
-        headers: opts[:headers] || %{},
-        method: opts[:method] || "POST",
-        query: opts[:query] || %{},
-        payload: payload,
-        raw: opts[:raw_body] || opts[:raw] || payload,
-        metadata: %{raw_body: opts[:raw_body] || opts[:raw]}
-      })
-
-    with :ok <- verify_webhook(request, opts),
-         {:ok, parsed_event} <- parse_event(request, opts) do
-      route_parsed_event(chat, parsed_event, opts, request)
-    end
+  def open_dm(user_id, _opts \\ []) do
+    {:ok, to_string(user_id)}
   end
 
   @impl true
@@ -172,59 +140,37 @@ defmodule Jido.Chat.X.Adapter do
     secret = consumer_secret(opts)
 
     cond do
-      secret in [nil, ""] ->
-        {:error, :missing_consumer_secret}
-
-      get_request?(method) and crc_token(request) not in [nil, ""] ->
-        :ok
-
-      get_request?(method) ->
-        {:error, :missing_crc_token}
-
-      valid_signature?(request, secret) ->
-        :ok
-
-      true ->
-        {:error, :invalid_signature}
+      secret in [nil, ""] -> {:error, :missing_consumer_secret}
+      get_request?(method) and crc_token(request) not in [nil, ""] -> :ok
+      get_request?(method) -> {:error, :missing_crc_token}
+      valid_signature?(request, secret) -> :ok
+      true -> {:error, :invalid_signature}
     end
   end
 
   def verify_webhook(request, opts) when is_map(request) do
-    request
-    |> WebhookRequest.new()
-    |> verify_webhook(opts)
-  end
-
-  @impl true
-  def parse_event(request, opts \\ [])
-
-  def parse_event(%WebhookRequest{method: method} = request, _opts) do
-    case {get_request?(method), dm_events(request.payload)} do
-      {true, _events} -> {:ok, :noop}
-      {false, [event | _rest]} -> event_envelope(event, request)
-      {false, []} -> {:ok, :noop}
-    end
-  end
-
-  def parse_event(request, opts) when is_map(request) do
-    request
-    |> WebhookRequest.new()
-    |> parse_event(opts)
+    request |> WebhookRequest.new() |> verify_webhook(opts)
   end
 
   @impl true
   def format_webhook_response(%WebhookRequest{method: method} = request, opts)
       when is_binary(method) do
-    format_crc_response(request, consumer_secret(opts), get_request?(method))
+    if get_request?(method),
+      do: format_crc_response(request, consumer_secret(opts), true),
+      else: WebhookResponse.error(400, "unsupported_control_method")
   end
 
-  def format_webhook_response({:ok, _chat, _incoming}, _opts), do: WebhookResponse.accepted()
-  def format_webhook_response({:ok, :noop}, _opts), do: WebhookResponse.accepted()
+  def format_webhook_response({:ok, %Delivery{}}, _opts) do
+    WebhookResponse.accepted()
+  end
 
-  def format_webhook_response({:error, reason}, _opts),
-    do: WebhookResponse.error(400, inspect(reason))
+  def format_webhook_response({:error, %Contract{code: code}}, _opts) do
+    WebhookResponse.error(400, %{error: to_string(code)})
+  end
 
-  def format_webhook_response(_, _opts), do: WebhookResponse.accepted()
+  def format_webhook_response(_, _opts) do
+    WebhookResponse.error(400, %{error: "rejected"})
+  end
 
   defp send_text(room_id, text, opts) do
     if conversation_room_id?(room_id) do
@@ -240,8 +186,7 @@ defmodule Jido.Chat.X.Adapter do
         payload.fallback_text
 
     with {:ok, attachment_lines} <- attachment_lines(PostPayload.outbound_attachments(payload)) do
-      [reply_context(opts), blank_to_nil(base) | attachment_lines]
-      |> render_text_sections()
+      [reply_context(opts), blank_to_nil(base) | attachment_lines] |> render_text_sections()
     end
   end
 
@@ -263,8 +208,9 @@ defmodule Jido.Chat.X.Adapter do
     {:ok, "#{label}: #{url}"}
   end
 
-  defp attachment_line(%Attachment{}),
-    do: {:error, {:unsupported_file_upload, :x_requires_media_upload_or_remote_url}}
+  defp attachment_line(%Attachment{}) do
+    {:error, {:unsupported_file_upload, :x_requires_media_upload_or_remote_url}}
+  end
 
   defp reply_context(opts) do
     case Keyword.get(opts, :reply_to_id) || Keyword.get(opts, :quote_id) do
@@ -274,54 +220,12 @@ defmodule Jido.Chat.X.Adapter do
   end
 
   defp render_text_sections(sections) do
-    body =
-      sections
-      |> Enum.reject(&is_nil/1)
-      |> Enum.join("\n\n")
-      |> String.trim()
+    body = sections |> Enum.reject(&is_nil/1) |> Enum.join("\n\n") |> String.trim()
 
-    if body == "", do: {:error, :empty_message}, else: {:ok, body}
-  end
-
-  defp route_parsed_event(chat, :noop, _opts, %WebhookRequest{} = request) do
-    {:ok, chat, synthetic_incoming(request, :noop)}
-  end
-
-  defp route_parsed_event(chat, %EventEnvelope{} = envelope, opts, _request) do
-    with {:ok, updated_chat, routed_envelope} <- Jido.Chat.process_event(chat, :x, envelope, opts),
-         %EventEnvelope{payload: %Incoming{} = incoming} <- routed_envelope do
-      {:ok, updated_chat, incoming}
+    if body == "" do
+      {:error, :empty_message}
     else
-      %EventEnvelope{} -> {:error, :unsupported_event_type}
-      {:error, _reason} = error -> error
-    end
-  end
-
-  defp synthetic_incoming(%WebhookRequest{} = request, event_type) do
-    Incoming.new(%{
-      external_room_id: "x",
-      external_user_id: nil,
-      external_message_id: WebhookRequest.header(request, "x-twitter-webhooks-delivery"),
-      text: nil,
-      raw: request.payload,
-      metadata: %{event_type: event_type}
-    })
-  end
-
-  defp event_envelope(event, %WebhookRequest{} = request) do
-    with {:ok, incoming} <-
-           transform_incoming(%{"dm_event" => event, "payload" => request.payload}) do
-      {:ok,
-       EventEnvelope.new(%{
-         adapter_name: :x,
-         event_type: :message,
-         thread_id: thread_id(incoming.external_room_id),
-         channel_id: to_string(incoming.external_room_id),
-         message_id: to_string(incoming.external_message_id),
-         payload: incoming,
-         raw: request.payload,
-         metadata: %{"for_user_id" => request.payload["for_user_id"]}
-       })}
+      {:ok, body}
     end
   end
 
@@ -329,7 +233,7 @@ defmodule Jido.Chat.X.Adapter do
     context = dm_context(event)
     source_payload = payload["payload"] || payload
 
-    Incoming.new(%{
+    %{
       external_room_id: "conversation:#{context.conversation_id || context.sender_id}",
       external_thread_id: context.conversation_id && to_string(context.conversation_id),
       external_message_id: context.id && to_string(context.id),
@@ -341,7 +245,7 @@ defmodule Jido.Chat.X.Adapter do
       raw: payload,
       media: media_from_event(event, source_payload),
       metadata: %{"conversation_id" => context.conversation_id}
-    })
+    }
   end
 
   defp message_from_event(event, room_id, payload) do
@@ -378,17 +282,17 @@ defmodule Jido.Chat.X.Adapter do
   defp response_from_send(raw, room_id) do
     data = raw["data"] || raw[:data] || raw
 
-    Response.new(%{
+    %{
       external_message_id: data["dm_event_id"] || data[:dm_event_id] || data["id"],
       external_room_id:
         "conversation:#{data["dm_conversation_id"] || data[:dm_conversation_id] || room_id}",
       channel_type: :x,
       raw: raw
-    })
+    }
   end
 
-  defp put_response_metadata(%Response{} = response, key, value) do
-    %{response | metadata: Map.put(response.metadata || %{}, key, value)}
+  defp put_response_metadata(%{} = response, key, value) do
+    Map.put(response, :metadata, Map.put(Map.get(response, :metadata, %{}), key, value))
   end
 
   defp dm_events(payload) do
@@ -440,18 +344,25 @@ defmodule Jido.Chat.X.Adapter do
       width: media["width"],
       height: media["height"],
       duration: media["duration_ms"],
-      metadata: %{
-        "id" => media["id"],
-        "media_key" => media["media_key"],
-        "raw" => media
-      }
+      metadata: %{"id" => media["id"], "media_key" => media["media_key"], "raw" => media}
     })
   end
 
-  defp media_kind(type) when type in ["photo", "animated_gif", "image"], do: :image
-  defp media_kind(type) when type in ["video"], do: :video
-  defp media_kind(type) when type in ["audio"], do: :audio
-  defp media_kind(_type), do: :file
+  defp media_kind(type) when type in ["photo", "animated_gif", "image"] do
+    :image
+  end
+
+  defp media_kind(type) when type in ["video"] do
+    :video
+  end
+
+  defp media_kind(type) when type in ["audio"] do
+    :audio
+  end
+
+  defp media_kind(_type) do
+    :file
+  end
 
   defp media_type_from_primary_url(:image, url) when is_binary(url) do
     url
@@ -464,30 +375,39 @@ defmodule Jido.Chat.X.Adapter do
     |> then(&Map.get(@image_media_types, &1))
   end
 
-  defp media_type_from_primary_url(_kind, _url), do: nil
+  defp media_type_from_primary_url(_kind, _url) do
+    nil
+  end
 
   defp normalize_media_type(value) when is_binary(value) do
     trimmed = String.trim(value)
 
-    if Regex.match?(@media_type_pattern, canonical_media_type(trimmed)),
-      do: trimmed,
-      else: nil
+    if Regex.match?(@media_type_pattern, canonical_media_type(trimmed)) do
+      trimmed
+    else
+      nil
+    end
   end
 
-  defp normalize_media_type(_value), do: nil
+  defp normalize_media_type(_value) do
+    nil
+  end
 
   defp canonical_media_type(value) do
-    value
-    |> String.split(";", parts: 2)
-    |> hd()
-    |> String.trim()
-    |> String.downcase()
+    value |> String.split(";", parts: 2) |> hd() |> String.trim() |> String.downcase()
   end
 
   defp first_non_blank(values) do
     Enum.find_value(values, fn
-      value when is_binary(value) -> if(String.trim(value) == "", do: nil, else: value)
-      _other -> nil
+      value when is_binary(value) ->
+        if String.trim(value) == "" do
+          nil
+        else
+          value
+        end
+
+      _other ->
+        nil
     end)
   end
 
@@ -507,8 +427,6 @@ defmodule Jido.Chat.X.Adapter do
     end
   end
 
-  defp format_crc_response(_request, _secret, false), do: WebhookResponse.accepted()
-
   defp valid_signature?(request, secret) do
     signature = WebhookRequest.header(request, "x-twitter-webhooks-signature")
 
@@ -517,17 +435,24 @@ defmodule Jido.Chat.X.Adapter do
   end
 
   defp consumer_secret(opts) do
-    Keyword.get(opts, :consumer_secret) || System.get_env("X_CONSUMER_SECRET") ||
-      System.get_env("SECRET_KEY")
+    if Keyword.has_key?(opts, :consumer_secret) do
+      opts[:consumer_secret]
+    else
+      System.get_env("X_CONSUMER_SECRET") || System.get_env("SECRET_KEY")
+    end
   end
 
-  defp get_request?(method), do: String.upcase(method || "POST") == "GET"
+  defp get_request?(method) do
+    String.upcase(method || "POST") == "GET"
+  end
 
-  defp conversation_room_id?(room_id),
-    do: String.starts_with?(to_string(room_id), "conversation:")
+  defp conversation_room_id?(room_id) do
+    String.starts_with?(to_string(room_id), "conversation:")
+  end
 
-  defp conversation_id(room_id),
-    do: String.replace_prefix(to_string(room_id), "conversation:", "")
+  defp conversation_id(room_id) do
+    String.replace_prefix(to_string(room_id), "conversation:", "")
+  end
 
   defp filename_from_url(url) when is_binary(url) do
     url
@@ -542,24 +467,371 @@ defmodule Jido.Chat.X.Adapter do
     _ -> nil
   end
 
-  defp blank_to_nil(nil), do: nil
-  defp blank_to_nil(""), do: nil
-  defp blank_to_nil(value) when is_binary(value), do: value
-  defp blank_to_nil(value), do: to_string(value)
+  defp blank_to_nil(nil) do
+    nil
+  end
 
-  defp author(nil), do: nil
+  defp blank_to_nil("") do
+    nil
+  end
 
-  defp author(user_id),
-    do: Author.new(%{user_id: to_string(user_id), user_name: to_string(user_id)})
+  defp blank_to_nil(value) when is_binary(value) do
+    value
+  end
 
-  defp transport(opts), do: Keyword.get(opts, :transport, XdkClient)
-  defp thread_id(room_id), do: "x:#{room_id}"
-  defp crc_token(%WebhookRequest{query: query}), do: query["crc_token"] || query[:crc_token]
-  defp raw_body(%WebhookRequest{raw: raw}) when is_binary(raw), do: raw
-  defp raw_body(%WebhookRequest{metadata: %{"raw_body" => raw}}) when is_binary(raw), do: raw
-  defp raw_body(%WebhookRequest{metadata: %{raw_body: raw}}) when is_binary(raw), do: raw
-  defp raw_body(%WebhookRequest{payload: payload}), do: Jason.encode!(payload)
-  defp hmac(secret, data), do: :crypto.mac(:hmac, :sha256, secret, data) |> Base.encode64()
-  defp secure_compare(a, b) when byte_size(a) == byte_size(b), do: :crypto.hash_equals(a, b)
-  defp secure_compare(_, _), do: false
+  defp blank_to_nil(value) do
+    to_string(value)
+  end
+
+  defp author(nil) do
+    nil
+  end
+
+  defp author(user_id) do
+    Author.new(%{user_id: to_string(user_id), user_name: to_string(user_id)})
+  end
+
+  defp transport(opts) do
+    Keyword.get(opts, :transport, XdkClient)
+  end
+
+  defp thread_id(room_id) do
+    "x:#{room_id}"
+  end
+
+  defp crc_token(%WebhookRequest{query: query}) do
+    query["crc_token"] || query[:crc_token]
+  end
+
+  defp raw_body(%WebhookRequest{raw: raw}) when is_binary(raw) do
+    raw
+  end
+
+  defp raw_body(%WebhookRequest{metadata: %{"raw_body" => raw}}) when is_binary(raw) do
+    raw
+  end
+
+  defp raw_body(%WebhookRequest{metadata: %{raw_body: raw}}) when is_binary(raw) do
+    raw
+  end
+
+  defp raw_body(%WebhookRequest{payload: payload}) do
+    Jason.encode!(payload)
+  end
+
+  defp hmac(secret, data) do
+    :crypto.mac(:hmac, :sha256, secret, data) |> Base.encode64()
+  end
+
+  defp secure_compare(a, b) when byte_size(a) == byte_size(b) do
+    :crypto.hash_equals(a, b)
+  end
+
+  defp secure_compare(_, _) do
+    false
+  end
+
+  @impl true
+  def signal_protocol do
+    1
+  end
+
+  @impl true
+  def normalize_event(binding, input) do
+    tracker = {__MODULE__, make_ref()}
+    Process.put(tracker, [])
+
+    result =
+      try do
+        with {:ok, items} <- native_inputs(binding, input) do
+          delivery = "x:delivery:" <> native_digest({binding.id, Enum.map(items, &elem(&1, 2))})
+          base = %{binding: binding, delivery: delivery, tracker: tracker}
+
+          with {:ok, facts} <- native_items(base, items) do
+            Delivery.new(binding, delivery, facts)
+          end
+        end
+      rescue
+        _ -> Policy.error(:invalid_delivery)
+      catch
+        _, _ -> Policy.error(:invalid_delivery)
+      end
+
+    if match?({:error, _}, result) do
+      Enum.each(Process.get(tracker, []), &Jido.Chat.cancel_resource(binding, &1))
+    end
+
+    Process.delete(tracker)
+    result
+  end
+
+  defp native_items(base, items) do
+    items
+    |> Enum.with_index()
+    |> Enum.reduce_while({:ok, []}, fn {{kind, payload, key}, index}, {:ok, acc} ->
+      context = Map.merge(base, %{item: "x:item:" <> key, index: index})
+      native_step(context, kind, payload, acc)
+    end)
+  end
+
+  defp native_step(context, kind, payload, acc) do
+    existing = Process.get(context.tracker)
+
+    result =
+      try do
+        native_map(context, kind, payload)
+      rescue
+        _ -> {:error, :invalid_item}
+      catch
+        _, _ -> {:error, :invalid_item}
+      end
+
+    case result do
+      {:ok, facts} ->
+        facts = List.wrap(facts)
+
+        if Enum.all?(facts, &(&1.type == "jido.chat.normalization.failed")) do
+          Enum.each(
+            Process.get(context.tracker) -- existing,
+            &Jido.Chat.cancel_resource(context.binding, &1)
+          )
+        end
+
+        {:cont, {:ok, acc ++ facts}}
+
+      {:error, %Contract{code: code}} = error
+      when code in [
+             :signal_too_large,
+             :delivery_too_large,
+             :too_many_signals,
+             :too_many_failures
+           ] ->
+        {:halt, error}
+
+      _ ->
+        Enum.each(
+          Process.get(context.tracker) -- existing,
+          &Jido.Chat.cancel_resource(context.binding, &1)
+        )
+
+        case native_failure(context, "invalid_item", kind, nil) do
+          {:ok, fact} -> {:cont, {:ok, acc ++ [fact]}}
+          error -> {:halt, error}
+        end
+    end
+  end
+
+  defp native_fact(context, definition, data, ordinal \\ "0") do
+    room = data["room_id"]
+
+    data =
+      data
+      |> Map.merge(%{
+        "item_id" => context.item <> ":" <> definition.type() <> ":" <> ordinal,
+        "delivery_id" => context.delivery
+      })
+      |> Map.reject(fn {key, value} ->
+        is_nil(value) and key not in ["text", "previous", "current", "actor_id", "reaction"]
+      end)
+
+    subject =
+      if is_binary(room) and room != "" do
+        Identity.conversation_subject(context.binding.id, room)
+      end
+
+    definition.new(data, source: context.binding.source, subject: subject)
+  end
+
+  defp native_failure(context, code, kind, room) do
+    native_fact(context, Jido.Chat.Signal.NormalizationFailed, %{
+      "code" => code,
+      "provider_kind" => kind,
+      "item_index" => context.index,
+      "room_id" => room
+    })
+  end
+
+  defp native_media(context, media) do
+    Enum.reduce_while(media, {:ok, []}, fn value, {:ok, acc} ->
+      case Jido.Chat.put_resource(context.binding, "media", value) do
+        {:ok, ref} ->
+          Process.put(context.tracker, [ref | Process.get(context.tracker)])
+
+          item =
+            %{"kind" => to_string(value.kind), "resource_ref" => ref}
+            |> native_optional("name", value.filename)
+            |> native_optional("media_type", value.media_type)
+
+          {:cont, {:ok, acc ++ [item]}}
+
+        error ->
+          {:halt, error}
+      end
+    end)
+  end
+
+  defp native_get(map, key) when is_map(map) do
+    atom =
+      try do
+        String.to_existing_atom(key)
+      rescue
+        ArgumentError -> nil
+      end
+
+    if Map.has_key?(map, key) do
+      Map.get(map, key)
+    else
+      Map.get(map, atom)
+    end
+  end
+
+  defp native_get(_, _) do
+    nil
+  end
+
+  defp native_id(map, key) do
+    native_identifier(native_get(map, key))
+  end
+
+  defp native_identifier(value) when is_binary(value) and value != "" do
+    value
+  end
+
+  defp native_identifier(value) when is_integer(value) do
+    to_string(value)
+  end
+
+  defp native_identifier(_) do
+    nil
+  end
+
+  defp native_optional(map, _, nil) do
+    map
+  end
+
+  defp native_optional(map, key, value) do
+    Map.put(map, key, value)
+  end
+
+  defp native_time(%DateTime{} = value) do
+    DateTime.to_iso8601(value)
+  end
+
+  defp native_time(value) when is_binary(value) do
+    value
+  end
+
+  defp native_time(_) do
+    nil
+  end
+
+  defp native_canonical(%_{} = value) do
+    value |> Map.from_struct() |> native_canonical()
+  end
+
+  defp native_canonical(value) when is_map(value) do
+    value |> Enum.map(fn {k, v} -> {to_string(k), native_canonical(v)} end) |> Enum.sort()
+  end
+
+  defp native_canonical(value) when is_list(value) do
+    Enum.map(value, &native_canonical/1)
+  end
+
+  defp native_canonical(value) do
+    value
+  end
+
+  defp native_digest(value) do
+    :crypto.hash(:sha256, :erlang.term_to_binary(native_canonical(value), [:deterministic]))
+    |> Base.url_encode64(padding: false)
+  end
+
+  @impl true
+  def configure_binding(opts) do
+    {:ok,
+     opts
+     |> Keyword.put_new(:transport, XdkClient)
+     |> Keyword.put_new(
+       :consumer_secret,
+       System.get_env("X_CONSUMER_SECRET") || System.get_env("SECRET_KEY")
+     )}
+  end
+
+  defp native_inputs(binding, %WebhookRequest{} = request) do
+    with :ok <- verify_webhook(request, binding.options), do: verified_inputs(binding, request)
+  end
+
+  defp native_inputs(binding, items) when is_list(items) do
+    Enum.reduce_while(items, {:ok, []}, fn item, {:ok, acc} ->
+      case native_inputs(binding, item) do
+        {:ok, values} -> {:cont, {:ok, acc ++ values}}
+        error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp native_inputs(_binding, %{} = payload) do
+    events = native_events(payload)
+
+    if is_list(events) do
+      {:ok,
+       Enum.map(events, fn event ->
+         kind =
+           native_get(event, "type") || native_get(event, "event_type") ||
+             if native_id(event, "sender_id") do
+               "MessageCreate"
+             else
+               "unknown"
+             end
+
+         key = native_id(event, "id") || native_id(event, "dm_event_id") || native_digest(event)
+         {kind, {event, payload}, key}
+       end)}
+    else
+      Policy.error(:invalid_delivery)
+    end
+  end
+
+  defp native_inputs(_, other) do
+    {:ok, [{"invalid", {other, %{}}, native_digest(other)}]}
+  end
+
+  defp verified_inputs(binding, request) do
+    if get_request?(request.method) do
+      {:ok, []}
+    else
+      case Jason.decode(raw_body(request)) do
+        {:ok, %{} = payload} -> native_inputs(binding, payload)
+        _ -> Policy.error(:invalid_delivery)
+      end
+    end
+  end
+
+  defp native_events(payload) do
+    if Enum.any?(["direct_message_events", "dm_events", "data"], &Map.has_key?(payload, &1)),
+      do: dm_events(payload),
+      else: [payload["dm_event"] || payload]
+  end
+
+  defp native_map(context, kind, {event, payload})
+       when kind in ["MessageCreate", "message_create"] do
+    incoming = incoming_from_dm(event, payload)
+
+    with {:ok, media} <- native_media(context, incoming.media) do
+      native_fact(context, Jido.Chat.Signal.MessageReceived, %{
+        "room_id" => incoming.external_room_id,
+        "message_id" => incoming.external_message_id,
+        "sender" => %{"id" => incoming.external_user_id},
+        "text" => incoming.text,
+        "thread_id" => incoming.external_thread_id,
+        "media" => media,
+        "timestamp" => native_time(incoming.timestamp),
+        "conversation_kind" => "direct"
+      })
+    end
+  end
+
+  defp native_map(context, kind, _) do
+    native_failure(context, "unsupported_item", kind, nil)
+  end
 end
