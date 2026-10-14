@@ -8,70 +8,64 @@
 [![Ecosystem](https://img.shields.io/badge/ecosystem-jido.run-0ea5e9.svg)](https://jido.run/ecosystem)
 [![Discord](https://img.shields.io/badge/discord-join-5865F2.svg?logo=discord&logoColor=white)](https://jido.run/discord)
 
-`jido_chat_x` adapts X/Twitter Direct Messages to the `Jido.Chat.Adapter` contract.
+`jido_chat_x` provides the `Jido.Chat.X.Adapter` adapter for the public Chat Signal contract.
 
-The adapter is built on [`xdk-elixir`](https://github.com/mikehostetler/xdk-elixir) for API calls.
+## Release status
 
-## Installation
+This branch proposes version 2.0. It changes the public communication API.
+Use the immutable PR source commits for review and tests. The new Hex releases
+are not yet published. Production requires Chat 2.0 and compatible upstream
+Signal releases. The dependency helpers keep source pins in development and test.
+
+## Typed operations
+
+The application supplies private binding options and a provider room ID:
 
 ```elixir
-def deps do
-  [
-    {:jido_chat_x, "~> 0.1"}
-  ]
-end
+{:ok, binding} = Jido.Chat.bind(Jido.Chat.X.Adapter, private_binding_options)
+request = Jido.Chat.Signal.SendMessage.new!(%{
+  "request_id" => "request-1",
+  "room_id" => provider_room_id,
+  "text" => "Hello"
+})
+{:ok, result} = Jido.Chat.execute(binding, request)
 ```
 
-## Feature surface
+The result is an OperationCompleted or OperationFailed signal. Repeating an
+admitted request uses its saved result. Private tokens, clients and resources
+stay outside signal data. Unsupported operations return a defined typed result.
 
-- Numeric X user ids can be used as outbound DM rooms.
-- Existing DM conversations use `conversation:{dm_conversation_id}`.
-- `send_message/3` sends text DMs by participant id or conversation id.
-- `post_message/3` sends text/markdown payloads as plain DM text.
-- `send_file/3` supports remote file/media URLs by appending links to the DM text.
-- Local file paths and in-memory binary uploads are intentionally rejected until the media upload flow is live-tested.
-- `fetch_message/3`, `fetch_messages/2`, and `delete_message/3` use the XDK Direct Messages API.
-- `open_dm/2` returns the numeric user id as a sendable DM room.
-- Account Activity webhooks verify CRC and POST signatures, parse DM events, and route through `Jido.Chat.process_event/4`.
+## Inbound delivery
 
-X Direct Messages do not support message edits, reactions, modals, or ephemeral messages through this adapter.
+Normalize one complete verified provider input unit with the configured binding:
 
-## Live testing
-
-Set:
-
-```bash
-RUN_LIVE_X_TESTS=true
-RUN_LIVE_X_SEND_TESTS=false
-X_CONSUMER_KEY=
-X_CONSUMER_SECRET=
-X_ACCESS_TOKEN=
-X_ACCESS_TOKEN_SECRET=
-X_TEST_RECIPIENT_ID=
+```elixir
+{:ok, delivery} = Jido.Chat.normalize_event(binding, verified_provider_input)
+{:ok, observations} = MyApp.Messaging.accept_delivery(delivery)
 ```
 
-`RUN_LIVE_X_TESTS=true` enables read-only credential verification. Set
-`RUN_LIVE_X_SEND_TESTS=true` only when you want the test suite to create a real DM
-to `X_TEST_RECIPIENT_ID`. The authenticated X user must be able to send a DM to
-that recipient.
+The Messaging instance owns runtime acceptance. Deliveries retain ordered facts
+and explicit item failures. Membership evidence does not create grants or start
+message handlers. A rejected listener sink follows the provider checkpoint rule.
+Configure protocol version 1 before starting provider listeners.
 
-Run:
+## Operation support
 
-```bash
-mix test --include live
-```
+Native: `send_message`, `send_file`, `post_message`, `delete_message`, `fetch_message`, `fetch_messages`, `open_dm`.
 
-## Webhook setup
+Fallback: `fetch_metadata`, `fetch_thread`, `post_channel_message`, `stream`.
 
-X Account Activity webhooks are required for real-time DM ingress.
+All other operations are explicitly unsupported. See the frozen [adapter matrix](https://github.com/agentjido/jido_chat/blob/codex/public-signal-v3/docs/migration/adapter-matrix.json).
 
-- Configure a webhook URL for your runtime route, for example `/api/webhooks/x`
-- The route must answer CRC GET checks with an HMAC-SHA256 `response_token`
-- POST requests must be verified with `x-twitter-webhooks-signature`
-- Subscribe the authenticated user account to Account Activity events
+## Provider setup
 
-The adapter deduplicates should be handled by the runtime using the DM event id.
+X supports direct messages through xdk-elixir. Verify the provider webhook before acceptance. Keep OAuth credentials and provider clients in the binding. The transport can be replaced for deterministic tests.
 
-## Local Documentation
+## Checks and migration
 
-Run `mix docs` to generate HTML and Markdown documentation in `doc/`, including Markdown pages and `llms.txt`.
+Run `mix test` and `mix quality`. Live tests stay excluded by default. The fixed
+provider fixtures do not need credentials or live traffic.
+
+See the [migration guide](https://github.com/agentjido/jido_chat/blob/codex/public-signal-v3/docs/migration/MIGRATION_GUIDE.md)
+for API mappings, the complete runnable local example, limits, release order and
+rollback pins. Run `mix docs` to build this package's API documentation.

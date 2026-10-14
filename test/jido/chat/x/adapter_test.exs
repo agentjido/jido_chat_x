@@ -1,9 +1,11 @@
 defmodule Jido.Chat.X.AdapterTest do
   use ExUnit.Case, async: true
 
+  alias Jido.Chat.Handlers
+
   alias Jido.Chat
   alias Jido.Chat.Adapter, as: ChatAdapter
-  alias Jido.Chat.{EventEnvelope, PostPayload, WebhookRequest, WebhookResponse}
+  alias Jido.Chat.{PostPayload, WebhookRequest, WebhookResponse}
   alias Jido.Chat.X.Adapter
 
   defmodule FakeTransport do
@@ -146,11 +148,11 @@ defmodule Jido.Chat.X.AdapterTest do
   test "normalizes account activity DM webhook events with media" do
     event = account_activity_event()
 
-    assert {:ok, incoming} = Adapter.transform_incoming(%{"dm_event" => event})
-    assert incoming.external_room_id == "conversation:123"
-    assert incoming.external_user_id == "123"
-    assert incoming.text == "hello"
-    assert [media] = incoming.media
+    incoming = normalize(%{"dm_event" => event})
+    assert incoming.data["room_id"] == "conversation:123"
+    assert incoming.data["sender"]["id"] == "123"
+    assert incoming.data["text"] == "hello"
+    assert [media] = media(incoming)
     assert media.kind == :image
     assert media.url == "https://example.test/photo.jpg"
     assert media.media_type == "image/jpeg"
@@ -162,8 +164,8 @@ defmodule Jido.Chat.X.AdapterTest do
         "image/png"
       )
 
-    assert {:ok, explicit_incoming} = Adapter.transform_incoming(%{"dm_event" => explicit})
-    assert [%{media_type: "image/png"}] = explicit_incoming.media
+    explicit_incoming = normalize(%{"dm_event" => explicit})
+    assert [%{media_type: "image/png"}] = media(explicit_incoming)
 
     invalid_explicit =
       event
@@ -180,10 +182,9 @@ defmodule Jido.Chat.X.AdapterTest do
         "https://example.test/photo.PNG?token=signed"
       )
 
-    assert {:ok, invalid_incoming} =
-             Adapter.transform_incoming(%{"dm_event" => invalid_explicit})
+    invalid_incoming = normalize(%{"dm_event" => invalid_explicit})
 
-    assert [%{kind: :image, media_type: "image/png"}] = invalid_incoming.media
+    assert [%{kind: :image, media_type: "image/png"}] = media(invalid_incoming)
 
     misleading =
       put_in(
@@ -192,22 +193,21 @@ defmodule Jido.Chat.X.AdapterTest do
         "https://example.test/report.pdf"
       )
 
-    assert {:ok, misleading_incoming} = Adapter.transform_incoming(%{"dm_event" => misleading})
-    assert [%{kind: :image, media_type: nil}] = misleading_incoming.media
+    misleading_incoming = normalize(%{"dm_event" => misleading})
+    assert [%{kind: :image, media_type: nil}] = media(misleading_incoming)
   end
 
   test "normalizes X API v2 DM events with included media" do
     payload = v2_payload()
 
-    assert {:ok, %EventEnvelope{} = envelope} =
-             Adapter.parse_event(WebhookRequest.new(%{payload: payload}))
+    envelope = normalize(payload)
+    assert envelope.type == "jido.chat.message.received"
 
-    assert envelope.event_type == :message
-    assert envelope.payload.external_room_id == "conversation:abc"
-    assert envelope.payload.text == "hello with media"
+    assert envelope.data["room_id"] == "conversation:abc" and
+             envelope.data["text"] == "hello with media"
 
     assert [%{kind: :image, url: "https://example.test/preview.jpg", media_type: nil}] =
-             envelope.payload.media
+             media(envelope)
   end
 
   test "verifies POST webhook signatures against the raw body" do
@@ -248,22 +248,45 @@ defmodule Jido.Chat.X.AdapterTest do
     raw = Jason.encode!(payload)
     secret = "x-secret"
 
-    chat =
-      Chat.new(user_name: "jido", adapters: %{x: Adapter})
-      |> Chat.on_new_message(~r/hello/, fn _thread, incoming ->
-        send(self(), {:x_message, incoming})
+    {:ok, binding} = Chat.bind(Adapter, id: "x-route", consumer_secret: secret)
+
+    request =
+      WebhookRequest.new(%{
+        payload: payload,
+        raw: raw,
+        headers: %{"x-twitter-webhooks-signature" => x_signature(secret, raw)}
+      })
+
+    assert {:ok, unit} = Chat.normalize_event(binding, request)
+    {:ok, handlers} = Handlers.new()
+
+    {:ok, handlers} =
+      Handlers.on(handlers, Jido.Chat.Signal.MessageReceived, fn fact ->
+        send(self(), {:x_message, fact})
       end)
 
-    assert {:ok, _updated_chat, incoming} =
-             Adapter.handle_webhook(chat, payload,
-               headers: %{"x-twitter-webhooks-signature" => x_signature(secret, raw)},
-               raw_body: raw,
-               consumer_secret: secret
-             )
+    assert {:ok, _, _} = Handlers.accept(handlers, binding, unit)
+    assert [incoming] = unit.signals
 
-    assert incoming.external_room_id == "conversation:123"
-    assert incoming.external_message_id == "evt1"
+    assert incoming.data["room_id"] == "conversation:123" and
+             incoming.data["message_id"] == "evt1"
+
     assert_received {:x_message, ^incoming}
+    refute_received {:x_message, _}
+  end
+
+  defp normalize(payload) do
+    {:ok, binding} = Chat.bind(Adapter, id: "x-test")
+    Process.put(:x_binding, binding)
+    assert {:ok, %{signals: [fact]}} = Chat.normalize_event(binding, payload)
+    fact
+  end
+
+  defp media(fact) do
+    Enum.map(fact.data["media"], fn item ->
+      assert {:ok, media} = Chat.resolve_resource(Process.get(:x_binding), item["resource_ref"])
+      media
+    end)
   end
 
   defp account_activity_event do
