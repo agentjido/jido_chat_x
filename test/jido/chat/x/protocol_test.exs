@@ -42,7 +42,7 @@ defmodule Jido.Chat.X.ProtocolTest do
     defp result(_), do: {:ok, %{"data" => %{"dm_event_id" => "m1", "dm_conversation_id" => "C1"}}}
   end
 
-  @matrix Path.expand("../../../../../jido_chat/docs/migration/adapter-matrix.json", __DIR__)
+  @matrix Path.join(Mix.Project.deps_paths()[:jido_chat], "docs/migration/adapter-matrix.json")
           |> File.read!()
           |> Jason.decode!()
   @row Enum.find(@matrix["adapters"], &(&1["package"] == "jido_chat_x"))
