@@ -1,47 +1,56 @@
 defmodule Jido.Chat.X.LiveIntegrationTest do
   use ExUnit.Case, async: false
 
+  alias Jido.Chat.Client
   alias Jido.Chat.X.Adapter
 
   @moduletag :live
+  @run_live System.get_env("RUN_LIVE_X_TESTS") in ["1", "true", "TRUE", "yes"]
+  @run_live_send @run_live and
+                   System.get_env("RUN_LIVE_X_SEND_TESTS") in ["1", "true", "TRUE", "yes"]
+
+  if not @run_live do
+    @moduletag skip: "set RUN_LIVE_X_TESTS=true to run live X tests"
+  end
+
+  if @run_live and
+       not Enum.all?(
+         ~w(X_CONSUMER_KEY X_CONSUMER_SECRET X_ACCESS_TOKEN X_ACCESS_TOKEN_SECRET),
+         &(System.get_env(&1) not in [nil, ""])
+       ) do
+    raise "live X tests require OAuth 1.0 credentials"
+  end
+
+  if @run_live_send and System.get_env("X_TEST_RECIPIENT_ID") in [nil, ""] do
+    raise "live X send tests require X_TEST_RECIPIENT_ID"
+  end
 
   test "verifies live X credentials through XDK" do
-    if run_live?() and oauth1_ready?() do
-      client = live_client()
+    client = live_client()
 
-      assert {:ok, %{"data" => %{"id" => id}}} = Xdk.Users.get_me(client)
-      assert is_binary(id)
-      assert id != ""
-    else
-      refute run_live?() and oauth1_ready?()
-    end
+    assert {:ok, %{"data" => %{"id" => id}}} = Xdk.Users.get_me(client)
+    assert is_binary(id)
+    assert id != ""
+  end
+
+  if not @run_live_send do
+    @tag skip: "set RUN_LIVE_X_SEND_TESTS=true to send a live X direct message"
   end
 
   test "sends a live X direct message through XDK" do
-    recipient_id = System.get_env("X_TEST_RECIPIENT_ID")
+    client = live_client()
+    text = "jido x live #{System.system_time(:millisecond)}"
 
-    if run_live_send?() and oauth1_ready?() and recipient_id not in [nil, ""] do
-      client = live_client()
-      text = "jido x live #{System.system_time(:millisecond)}"
+    chat =
+      Client.new!(Adapter,
+        id: "x-live",
+        config: [xdk_client: client]
+      )
 
-      assert {:ok, response} = Adapter.send_message(recipient_id, text, xdk_client: client)
+    assert {:ok, response} =
+             Jido.Chat.send_text(chat, System.fetch_env!("X_TEST_RECIPIENT_ID"), text)
 
-      assert response.external_message_id
-    else
-      refute run_live_send?() and oauth1_ready?() and recipient_id not in [nil, ""]
-    end
-  end
-
-  defp run_live?, do: System.get_env("RUN_LIVE_X_TESTS") in ["1", "true", "TRUE", "yes"]
-
-  defp run_live_send?,
-    do: run_live?() and System.get_env("RUN_LIVE_X_SEND_TESTS") in ["1", "true", "TRUE", "yes"]
-
-  defp oauth1_ready? do
-    Enum.all?(
-      ~w(X_CONSUMER_KEY X_CONSUMER_SECRET X_ACCESS_TOKEN X_ACCESS_TOKEN_SECRET),
-      &(System.get_env(&1) not in [nil, ""])
-    )
+    assert response.data["result"]["id"]
   end
 
   defp live_client do
