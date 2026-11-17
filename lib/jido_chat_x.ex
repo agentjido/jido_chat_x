@@ -10,7 +10,5 @@ defmodule Jido.Chat.X do
   def operations, do: []
 
   @doc "Returns the incoming facts normalized by X."
-  def event_definitions do
-    [Jido.Chat.Signal.MessageReceived, Jido.Chat.Signal.NormalizationFailed]
-  end
+  defdelegate event_definitions, to: Adapter
 end

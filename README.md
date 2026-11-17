@@ -5,67 +5,119 @@
 [![CI](https://github.com/agentjido/jido_chat_x/actions/workflows/ci.yml/badge.svg)](https://github.com/agentjido/jido_chat_x/actions/workflows/ci.yml)
 [![License](https://img.shields.io/hexpm/l/jido_chat_x.svg)](https://github.com/agentjido/jido_chat_x/blob/main/LICENSE)
 [![Website](https://img.shields.io/badge/website-jido.run-0f172a.svg)](https://jido.run)
-[![Ecosystem](https://img.shields.io/badge/ecosystem-jido.run-0ea5e9.svg)](https://jido.run/ecosystem)
-[![Discord](https://img.shields.io/badge/discord-join-5865F2.svg?logo=discord&logoColor=white)](https://jido.run/discord)
 
-`jido_chat_x` provides the `Jido.Chat.X.Adapter` adapter for the public Chat Signal contract.
+`jido_chat_x` provides a stateless X Direct Messages adapter for Jido Chat V3.
+It uses [`xdk-elixir`](https://github.com/mikehostetler/xdk-elixir) for provider
+I/O.
 
-## Release status
+## Local V3 setup
 
-This branch proposes version 2.0. It changes the public communication API.
-Use the immutable PR source commits for review and tests. The new Hex releases
-are not yet published. Production requires Chat 2.0 and compatible upstream
-Signal releases. The dependency helpers keep source pins in development and test.
+The V3 release is not published. Use the sibling Jido Chat source while you
+develop and test the stack:
+
+```elixir
+def deps do
+  [
+    {:jido_chat, path: "../jido_chat"},
+    {:jido_chat_x, path: "../jido_chat_x"}
+  ]
+end
+```
+
+Replace local paths with released Hex constraints only after the V3 packages
+are published.
+
+## Client setup
+
+Provider resources stay in the local immutable Client value. They do not enter
+request, result, or inbound Signals.
+
+```elixir
+client =
+  Jido.Chat.Client.new!(Jido.Chat.X.Adapter,
+    id: "support-x",
+    config: [xdk_client: my_xdk_client]
+  )
+```
+
+The host owns X authentication and the `Xdk` client lifecycle. The adapter
+starts no process.
 
 ## Typed operations
 
-The application supplies private binding options and a provider room ID:
+Use Jido Chat operations with the configured Client:
 
 ```elixir
-{:ok, binding} = Jido.Chat.bind(Jido.Chat.X.Adapter, private_binding_options)
-request = Jido.Chat.Signal.SendMessage.new!(%{
-  "request_id" => "request-1",
-  "room_id" => provider_room_id,
-  "text" => "Hello"
-})
-{:ok, result} = Jido.Chat.execute(binding, request)
+{:ok, sent} = Jido.Chat.send_text(client, x_user_id, "Hello")
+
+{:ok, page} =
+  Jido.Chat.Signal.Policy.new!(Jido.Chat.Signal.FetchMessages, %{
+    "client_id" => client.id,
+    "request_id" => "history-1",
+    "room_id" => "conversation:12345"
+  })
+  |> then(&Jido.Chat.execute(client, &1))
 ```
 
-The result is an OperationCompleted or OperationFailed signal. Repeating an
-admitted request uses its saved result. Private tokens, clients and resources
-stay outside signal data. Unsupported operations return a defined typed result.
+The adapter supports these native operations:
+
+- `send_message`
+- `delete_message`
+- `fetch_message`
+- `fetch_messages`
+- `open_dm`
+
+All other core operations return a typed `not_attempted` result without
+provider I/O.
 
 ## Inbound delivery
 
-Normalize one complete verified provider input unit with the configured binding:
+The host verifies and acknowledges the X webhook. Then it normalizes one
+complete verified provider input unit:
 
 ```elixir
-{:ok, delivery} = Jido.Chat.normalize_event(binding, verified_provider_input)
-{:ok, observations} = MyApp.Messaging.accept_delivery(delivery)
+{:ok, delivery} = Jido.Chat.normalize(client, verified_x_payload)
+
+Enum.each(delivery.signals, fn signal ->
+  # Apply the fact through the host-owned Jido Chat runtime or application flow.
+end)
 ```
 
-The Messaging instance owns runtime acceptance. Deliveries retain ordered facts
-and explicit item failures. Membership evidence does not create grants or start
-message handlers. A rejected listener sink follows the provider checkpoint rule.
-Configure protocol version 1 before starting provider listeners.
+Normalization is deterministic. It keeps provider item order, gives each item
+a stable identity, and turns unsupported provider items into explicit
+normalization-failure facts.
 
-## Operation support
+## Runtime ownership
 
-Native: `send_message`, `send_file`, `post_message`, `delete_message`, `fetch_message`, `fetch_messages`, `open_dm`.
+Jido Chat core owns the optional managed Room and provider runtime. This
+adapter owns only X request mapping, response mapping, and input normalization.
+It does not start a listener, room process, persistence process, or second
+messaging tree.
 
-Fallback: `fetch_metadata`, `fetch_thread`, `post_channel_message`, `stream`.
+## Offline checks
 
-All other operations are explicitly unsupported. See the frozen [adapter matrix](https://github.com/agentjido/jido_chat/blob/codex/public-signal-v3/docs/migration/adapter-matrix.json).
+```bash
+mix test
+mix test.contracts
+mix quality
+mix docs -f html -f markdown
+```
 
-## Provider setup
+Normal tests use fixed transports and make no X request. Live tests are tagged
+and excluded by default.
 
-X supports direct messages through xdk-elixir. Verify the provider webhook before acceptance. Keep OAuth credentials and provider clients in the binding. The transport can be replaced for deterministic tests.
+## Live checks
 
-## Checks and migration
+Set `RUN_LIVE_X_TESTS=true` with OAuth 1.0 credentials to run the read-only
+credential check. Set `RUN_LIVE_X_SEND_TESTS=true` and
+`X_TEST_RECIPIENT_ID` only when you also intend to create a real direct
+message.
 
-Run `mix test` and `mix quality`. Live tests stay excluded by default. The fixed
-provider fixtures do not need credentials or live traffic.
+```bash
+mix test --include live
+```
 
-See the [migration guide](https://github.com/agentjido/jido_chat/blob/codex/public-signal-v3/docs/migration/MIGRATION_GUIDE.md)
-for API mappings, the complete runnable local example, limits, release order and
-rollback pins. Run `mix docs` to build this package's API documentation.
+## Documentation
+
+Run `mix docs -f html -f markdown`. The command creates HTML documentation and
+`doc/llms.txt`.

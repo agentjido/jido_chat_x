@@ -31,14 +31,20 @@ defmodule Jido.Chat.X.Normalizer do
   end
 
   defp map_events(client, delivery_id, events) do
-    events
-    |> Enum.with_index()
-    |> Enum.reduce_while({:ok, []}, fn {event, index}, {:ok, acc} ->
-      case map_event(client, delivery_id, event, index) do
-        {:ok, signal} -> {:cont, {:ok, acc ++ [signal]}}
-        error -> {:halt, error}
-      end
-    end)
+    result =
+      events
+      |> Enum.with_index()
+      |> Enum.reduce_while({:ok, []}, fn {event, index}, {:ok, acc} ->
+        case map_event(client, delivery_id, event, index) do
+          {:ok, signal} -> {:cont, {:ok, [signal | acc]}}
+          error -> {:halt, error}
+        end
+      end)
+
+    case result do
+      {:ok, signals} -> {:ok, Enum.reverse(signals)}
+      error -> error
+    end
   end
 
   defp map_event(client, delivery_id, event, index) when is_map(event) do

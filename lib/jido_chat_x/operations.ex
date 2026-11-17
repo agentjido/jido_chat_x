@@ -5,7 +5,7 @@ defmodule Jido.Chat.X.Operations do
   alias Jido.Chat.X.Adapter
 
   def invoke(operation, %Client{adapter: Adapter} = client, signal, opts) do
-    call(operation, client, signal.data, Keyword.merge(Client.options(client), opts))
+    call(operation, client, signal.data, Keyword.merge(client.config, opts))
   end
 
   def invoke(_, _, _, _), do: {:error, {:not_attempted, :unsupported}}
@@ -58,12 +58,18 @@ defmodule Jido.Chat.X.Operations do
     do: client.transport.send_dm(participant_id, text, opts)
 
   defp map_messages(events, room_id) do
-    Enum.reduce_while(events, {:ok, []}, fn event, {:ok, acc} ->
-      case message(event, room_id, "received") do
-        {:ok, value} -> {:cont, {:ok, acc ++ [value]}}
-        error -> {:halt, error}
-      end
-    end)
+    result =
+      Enum.reduce_while(events, {:ok, []}, fn event, {:ok, acc} ->
+        case message(event, room_id, "received") do
+          {:ok, value} -> {:cont, {:ok, [value | acc]}}
+          error -> {:halt, error}
+        end
+      end)
+
+    case result do
+      {:ok, messages} -> {:ok, Enum.reverse(messages)}
+      error -> error
+    end
   end
 
   defp message(raw, requested_room, status) when is_map(raw) do

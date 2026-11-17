@@ -3,7 +3,6 @@ defmodule Jido.Chat.X.Adapter do
   use Jido.Chat.Adapter
 
   alias Jido.Chat.Operations.Definitions
-  alias Jido.Chat.X
   alias Jido.Chat.X.{Normalizer, Operations, Transport.XdkClient}
 
   @native ~w(send_message delete_message fetch_message fetch_messages open_dm)a
@@ -15,7 +14,9 @@ defmodule Jido.Chat.X.Adapter do
   def default_transport, do: XdkClient
 
   @impl true
-  def event_definitions, do: X.event_definitions()
+  def event_definitions do
+    [Jido.Chat.Signal.MessageReceived, Jido.Chat.Signal.NormalizationFailed]
+  end
 
   @impl true
   def capabilities do
